@@ -1,0 +1,342 @@
+import cv2
+import os
+import numpy as np
+from PyQt5 import QtWidgets, QtGui, QtCore
+import sys
+
+# 全局變量
+image_folder = None
+images = []
+image_index = 0
+op_list = []
+ip_list = []
+width, height = 11, 8
+square_size = 0.02
+rvecs_list = []
+tvecs_list = []
+distortion_coef = None
+camera_matrix = None
+imL = None
+imR = None
+ori_imL = None
+ori_imR = None
+sift = cv2.SIFT_create()
+keypoints1 = None
+descriptors1 = None
+text_edit = None
+
+def select_folder():
+    global image_folder, images, image_index
+    image_folder = QtWidgets.QFileDialog.getExistingDirectory(None, "Select folder", "")
+    if image_folder:
+        images = [f for f in os.listdir(image_folder) if f.endswith('.bmp')]
+        image_index = 0
+
+def show_image():
+    global image_index, images, image_folder, width, height, op_list, ip_list
+    if image_index >= len(images):
+        return
+    img_path = os.path.join(image_folder, images[image_index])
+    img = cv2.imread(img_path)
+    grayimg = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    object_points = np.zeros((height * width, 3), np.float32)
+    object_points[:, :2] = np.mgrid[0:width, 0:height].T.reshape(-1, 2) * square_size
+    op_list.append(object_points)
+    ret, corners = cv2.findChessboardCorners(grayimg, (width, height), None)
+    corners = cv2.cornerSubPix(grayimg, corners, winSize=(5, 5), zeroZone=(-1, -1), criteria=(cv2.TERM_CRITERIA_MAX_ITER + cv2.TERM_CRITERIA_EPS, 30, 0.001))
+    ip_list.append(corners)
+    cv2.drawChessboardCorners(img, (width, height), corners, ret)
+    # 圖片轉為 RGB
+    #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    def resize_image(image):
+        h, w = image.shape[:2]
+        scale_factor = min(800 / w, 600 / h)
+        new_w = int(w * scale_factor)
+        new_h = int(h * scale_factor)
+        return cv2.resize(image, (new_w, new_h)), new_w, new_h
+    
+    # 縮放圖片
+    img_resized, new_w, new_h = resize_image(img)
+
+
+    image_window = QtWidgets.QDialog()
+    image_window.setWindowTitle("Chessboard Corners")
+    q_img = QtGui.QImage(img_resized.data, new_w, new_h, new_w * 3, QtGui.QImage.Format_RGB888)
+    label = QtWidgets.QLabel(image_window)
+    label.setPixmap(QtGui.QPixmap.fromImage(q_img))  # 設置顯示圖片的 QLabel
+    label.setAlignment(QtCore.Qt.AlignCenter)
+    layout = QtWidgets.QVBoxLayout(image_window)
+    layout.addWidget(label)
+    image_window.exec()
+    image_index += 1
+
+def intrinsic():
+    global op_list, ip_list, rvecs_list, tvecs_list, distortion_coef, camera_matrix
+    ret, camera_matrix, distortion_coef, rvecs, tvecs = cv2.calibrateCamera(op_list, ip_list, (width, height), None, None)
+    rvecs_list = rvecs
+    tvecs_list = tvecs
+    result_message = f"Intrinsic matrix(camera matrix):\n{camera_matrix}"
+    QtWidgets.QMessageBox.information(None, "Intrinsic matrix", result_message)
+
+def extrinsic():
+    global rvecs_list, tvecs_list, image_index
+    rvec = rvecs_list[image_index - 1]
+    tvec = tvecs_list[image_index - 1]
+    rotation_matrix, _ = cv2.Rodrigues(rvec)
+    extrinsic_matrix = np.hstack((rotation_matrix, tvec))
+    result_message = f"Extrinsic Matrix:\n{extrinsic_matrix}"
+    QtWidgets.QMessageBox.information(None, "Extrinsic Matrix", result_message)
+
+def distortion():
+    global distortion_coef
+    result_message = f"Distortion coefficients:\n{distortion_coef}"
+    QtWidgets.QMessageBox.information(None, "Distortion coefficients", result_message)
+
+def undistorted():
+    global image_index, images, distortion_coef, camera_matrix
+    img_path = os.path.join(image_folder, images[image_index - 1])
+    img = cv2.imread(img_path)
+    undistorted_img = cv2.undistort(img, camera_matrix, distortion_coef)
+
+    def resize_image(image):
+        h, w = image.shape[:2]
+        new_w = int(w * 0.3)
+        new_h = int(h * 0.3)
+        return cv2.resize(image, (new_w, new_h)), new_w, new_h
+    img_resized, new_wO, new_hO = resize_image(img)
+    undistorted_img_resized, new_wUD, new_hUD = resize_image(undistorted_img)
+
+    image_rgb_O = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+    q_img = QtGui.QImage(image_rgb_O.data, new_wO, new_hO, new_wO * 3, QtGui.QImage.Format_RGB888)
+    image_rgb_UD = cv2.cvtColor(undistorted_img_resized, cv2.COLOR_BGR2RGB)
+    q_imgUD = QtGui.QImage(image_rgb_UD.data, new_wUD, new_hUD, new_wUD * 3, QtGui.QImage.Format_RGB888)
+
+    image_window = QtWidgets.QDialog()
+    image_window.setWindowTitle("result ( Distorted Chessboard, Undistorted Chessboard )")
+    label = QtWidgets.QLabel(image_window)
+    label.setPixmap(QtGui.QPixmap.fromImage(q_img))
+    label.setFixedSize(new_wO, new_hO)
+    label.setAlignment(QtCore.Qt.AlignCenter)
+    labelUD = QtWidgets.QLabel(image_window)
+    labelUD.setPixmap(QtGui.QPixmap.fromImage(q_imgUD))
+    labelUD.setFixedSize(new_wUD, new_hUD)
+    labelUD.setAlignment(QtCore.Qt.AlignCenter)
+    layout = QtWidgets.QHBoxLayout(image_window)
+    layout.addWidget(label)
+    layout.addWidget(labelUD)
+    image_window.setLayout(layout)
+    image_window.resize(new_wO + new_wUD, max(new_hO, new_hUD))
+    image_window.exec()
+
+def load_left_image():
+    global imL, ori_imL
+    img_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Load Image", "", "Images (*.png *.jpg)")
+    if img_path:
+        ori_imL = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        imL = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+
+def load_right_image():
+    global imR, ori_imR
+    img_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Load Image", "", "Images (*.png *.jpg)")
+    if img_path:
+        ori_imR = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        imR = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+
+def compute_disparity():
+    global imL, imR, ori_imL, ori_imR
+    stereo = cv2.StereoBM.create(numDisparities=432, blockSize=25)
+    disparity = stereo.compute(imL, imR)
+    disparity_normalized = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
+    disparity_normalized = np.uint8(disparity_normalized)
+    def resize_image(image, scale_factor):
+        h, w = image.shape[:2]
+        new_w = int(w * scale_factor)
+        new_h = int(h * scale_factor)
+        return cv2.resize(image, (new_w, new_h)), new_w, new_h
+    
+    imL_resized, new_wL, new_hL = resize_image(ori_imL, 0.5)
+    imR_resized, new_wR, new_hR = resize_image(ori_imR, 0.5)
+    disparity_resized, new_wD, new_hD = resize_image(disparity_normalized, 0.5)
+
+    combined_width = new_wL + new_wR + new_wD
+    if combined_width > 800:
+        scale_factor = 800 / combined_width
+        imL_resized, new_wL, new_hL = resize_image(ori_imL, scale_factor)
+        imR_resized, new_wR, new_hR = resize_image(ori_imR, scale_factor)
+        disparity_resized, new_wD, new_hD = resize_image(disparity_normalized, scale_factor)
+
+    def qimage(image, grayscale=False):
+        h, w = image.shape[:2]
+        if grayscale:
+            return QtGui.QImage(image.data, w, h, w, QtGui.QImage.Format_Grayscale8)
+        else:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            return QtGui.QImage(image_rgb.data, w, h, w*3, QtGui.QImage.Format_RGB888)
+    q_imgL = qimage(imL_resized)
+    q_imgR = qimage(imR_resized)
+    q_imgD = qimage(disparity_resized, grayscale=True)
+
+    image_window = QtWidgets.QDialog()
+    image_window.setWindowTitle("result ( imgL, imgR, Disparity Map )")
+    labelL = QtWidgets.QLabel(image_window)
+    labelL.setPixmap(QtGui.QPixmap.fromImage(q_imgL))
+    labelL.setFixedSize(new_wL, new_hL)
+    labelL.setAlignment(QtCore.Qt.AlignCenter)
+    labelR = QtWidgets.QLabel(image_window)
+    labelR.setPixmap(QtGui.QPixmap.fromImage(q_imgR))
+    labelR.setFixedSize(new_wR, new_hR)
+    labelR.setAlignment(QtCore.Qt.AlignCenter)
+    labelD = QtWidgets.QLabel(image_window)
+    labelD.setPixmap(QtGui.QPixmap.fromImage(q_imgD))
+    labelD.setFixedSize(new_wD, new_hD)
+    labelD.setAlignment(QtCore.Qt.AlignCenter)
+    layout = QtWidgets.QHBoxLayout(image_window)
+    layout.addWidget(labelL)
+    layout.addWidget(labelR)
+    layout.addWidget(labelD)
+    image_window.setLayout(layout)
+    image_window.resize(new_wL + new_wR + new_wD, max(new_hL, new_hR, new_hD))
+    image_window.exec()
+
+def detect_keypoints():
+    global imL, sift, keypoints1, descriptors1
+
+    keypoints1, descriptors1 = sift.detectAndCompute(imL, None)
+    img_with_keypoints = cv2.drawKeypoints(imL, keypoints1, None, color=(0, 255, 0))
+
+    h, w, channel = img_with_keypoints.shape
+    scale = min(800 / w, 600 / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    img_resized = cv2.resize(img_with_keypoints, (new_w, new_h))
+
+    q_img = QtGui.QImage(img_resized.data, new_w, new_h, new_w*3, QtGui.QImage.Format_RGB888)
+
+    image_window = QtWidgets.QDialog()
+    image_window.setWindowTitle("SIFT Keypoints on Image1")  
+    label = QtWidgets.QLabel(image_window)
+    label.setPixmap(QtGui.QPixmap.fromImage(q_img)) 
+    layout = QtWidgets.QVBoxLayout(image_window)
+    layout.addWidget(label)
+    image_window.resize(new_w, new_h)
+    image_window.exec()
+
+def match_keypoints():
+    global imL, imR, sift, keypoints1, descriptors1
+    keypoints2, descriptors2 = sift.detectAndCompute(imR, None)
+    bf = cv2.BFMatcher()
+    matches = bf.knnMatch(descriptors1, descriptors2, k=2)
+    good_matches = []
+    for m, n in matches:
+        if m.distance < 0.75 * n.distance:
+            good_matches.append([m])
+
+    img_matches = cv2.drawMatchesKnn(imL, keypoints1, imR, keypoints2, good_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+
+    h, w, channel = img_matches.shape
+    scale = min(800 / w, 600 / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    img_resized = cv2.resize(img_matches, (new_w, new_h))
+
+    q_img = QtGui.QImage(img_resized.data, new_w, new_h, new_w * 3, QtGui.QImage.Format_RGB888)
+
+    image_window = QtWidgets.QDialog()
+    image_window.setWindowTitle("Matched Keypoint") 
+    label = QtWidgets.QLabel(image_window)
+    label.setPixmap(QtGui.QPixmap.fromImage(q_img))
+    layout = QtWidgets.QVBoxLayout(image_window)
+    layout.addWidget(label)
+    image_window.resize(new_w, new_h)
+    image_window.exec()
+
+
+
+def main():
+    app = QtWidgets.QApplication(sys.argv)
+    window = QtWidgets.QWidget()
+    window.setWindowTitle('cvdl_hw1')
+    window.setGeometry(100, 100, 800, 600)
+
+    label = QtWidgets.QLabel(window)
+    label.setGeometry(10, 10, 780, 580)
+    label.setScaledContents(True)
+
+    select_file_button = QtWidgets.QPushButton('Load Folder', window)
+    select_file_button.setGeometry(10, 10, 150, 30)
+    select_file_button.clicked.connect(select_folder)
+
+    process_images_button = QtWidgets.QPushButton('1.1 Find Corners\n(click to show next pic)', window)
+    process_images_button.setGeometry(180, 10, 170, 50)
+    process_images_button.clicked.connect(show_image)
+
+    intrinsic_button = QtWidgets.QPushButton('1.2 Find Intrinsic', window)
+    intrinsic_button.setGeometry(180, 80, 170, 30)
+    intrinsic_button.clicked.connect(intrinsic)
+
+    select_num = QtWidgets.QComboBox(window)
+    select_num.setGeometry(180, 130, 170, 30)
+    select_num.addItems([str(i + 1) for i in range(15)])
+    select_num.currentIndexChanged.connect(lambda: set_image_index(select_num.currentIndex() + 1))
+
+    extrinsic_button = QtWidgets.QPushButton('1.3 Find Extrinsic', window)
+    extrinsic_button.setGeometry(180, 180, 170, 30)
+    extrinsic_button.clicked.connect(extrinsic)
+
+    distortion_button = QtWidgets.QPushButton('1.4 Find Distortion', window)
+    distortion_button.setGeometry(180, 230, 170, 30)
+    distortion_button.clicked.connect(distortion)
+    
+    undistorted_button = QtWidgets.QPushButton('1.5 Show Result', window)
+    undistorted_button.setGeometry(180, 280, 170, 30)
+    undistorted_button.clicked.connect(undistorted)
+
+    text_edit = QtWidgets.QTextEdit(window)
+    text_edit.setGeometry(370, 10, 200, 30)
+
+    show_word_button = QtWidgets.QPushButton('2.1 show words on board', window)
+    show_word_button.setGeometry(370, 60, 200, 30)
+    #show_word_button.clicked.connect()
+
+    vertical_button = QtWidgets.QPushButton('2.2 show words vertical', window)
+    vertical_button.setGeometry(370, 110, 200, 30)
+    #vertical_button.clicked.connect()
+
+    load_left_button = QtWidgets.QPushButton('Load Image_L', window)
+    load_left_button.setGeometry(10, 140, 150, 30)
+    load_left_button.clicked.connect(load_left_image)
+
+    load_right_button = QtWidgets.QPushButton('Load Image_R', window)
+    load_right_button.setGeometry(10, 190, 150, 30)
+    load_right_button.clicked.connect(load_right_image)
+
+    compute_disparity_button = QtWidgets.QPushButton('3.1 Stereo Disparity Map', window)
+    compute_disparity_button.setGeometry(370, 210, 200, 30)
+    compute_disparity_button.clicked.connect(compute_disparity)
+
+    load_image1_button = QtWidgets.QPushButton('Load Image 1', window)
+    load_image1_button.setGeometry(590, 10, 150, 30)
+    load_image1_button.clicked.connect(load_left_image)
+
+    load_image2_button = QtWidgets.QPushButton('Load Image 2', window)
+    load_image2_button.setGeometry(590, 60, 150, 30)
+    load_image2_button.clicked.connect(load_right_image)
+
+    keypoints_button = QtWidgets.QPushButton('4.1 Keypoints', window)
+    keypoints_button.setGeometry(590, 110, 150, 30)
+    keypoints_button.clicked.connect(detect_keypoints)
+
+    match_keypoints_button = QtWidgets.QPushButton('4.2 Match Keypoints', window)
+    match_keypoints_button.setGeometry(590, 160, 150, 30)
+    match_keypoints_button.clicked.connect(match_keypoints)
+
+    window.show()
+    sys.exit(app.exec_())
+
+def set_image_index(index):
+    global image_index
+    image_index = index
+
+if __name__ == '__main__':
+    main()
